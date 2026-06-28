@@ -28,6 +28,7 @@
 | **C** | IP 有 fixed-address 設定，但 ARP 顯示的 MAC 與設定中的 MAC 不符。設備可能已更換，但 dhcpd.conf 尚未更新 | 🟡 中 |
 | **D (DHCP管理網段)** | IP 所屬子網路在 dhcpd.conf 中有宣告，但此 IP 既不在 DHCP Pool 範圍內，也未登錄 fixed-address。管理者忘記登記 | 🟡 中 |
 | **D (純靜態網段)** | IP 所屬子網路完全未出現在任何 dhcpd.conf。屬於純靜態管理的網段，僅供參考 | ⚪ 低 |
+| **NAC** | ARP MAC 符合 NAC 設備 MAC 清單。此 IP 已被 NAC 封鎖，不列入 A/B/C/D 異常 | 🟢 封鎖中 |
 
 ---
 
@@ -45,7 +46,7 @@
           │  192.168.50.1      │   │                  │
           │  192.168.50.4      │   │  ipv4_mac 資料表  │
           │  192.168.50.5      │   │  (ARP 現況)       │
-          │  172.21.5.1        │   └─────────────────-┘
+          │  172.21.5.1        │   └──────────────────┘
           │                    │
           │  /etc/dhcp/dhcpd.conf
           │  /var/lib/dhcp/dhcpd.leases
@@ -125,14 +126,52 @@ DB_CONFIG = {
 }
 ```
 
-### 4. 啟動服務
+編輯 `config.py` 調整帳號密碼與 Session 金鑰：
+
+```python
+USERS: dict[str, str] = {
+    "admin": _hash("admin1234"),
+    "inno":  _hash("inno1234"),
+}
+
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "dhcp-analyzer-secret-key-change-me")
+```
+
+### 4. NAC 設備 MAC 設定
+
+NAC 設備 MAC 儲存於 `nac_macs.json`，可直接編輯或透過 Web UI 的「NAC 設定」按鈕管理：
+
+```json
+["bc:24:11:eb:3f:77"]
+```
+
+ARP MAC 符合清單的 IP 將被標記為「NAC 封鎖」，不列入 A/B/C/D 異常。
+
+### 5. 啟動服務
 
 ```bash
 cd dhcp-analyzer
 uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 
-瀏覽器開啟 `http://<host>:8080`
+瀏覽器開啟 `http://<host>:8080`，以帳號密碼登入後即可使用。
+
+**服務管理指令：**
+
+```bash
+# 查看是否在跑
+pgrep -a uvicorn
+
+# 停止
+kill $(pgrep -f uvicorn)
+
+# 重啟
+kill $(pgrep -f uvicorn) 2>/dev/null; sleep 1
+cd ~/dhcp-analyzer && nohup /home/inno/.local/bin/uvicorn app:app --host 0.0.0.0 --port 8080 > /tmp/dhcp-analyzer.log 2>&1 &
+
+# 查看即時 log
+tail -f /tmp/dhcp-analyzer.log
+```
 
 ---
 
@@ -140,14 +179,19 @@ uvicorn app:app --host 0.0.0.0 --port 8080
 
 ```
 dhcp-analyzer/
-├── app.py                  # FastAPI 後端，提供 REST API 與靜態檔案服務
-├── analyzer.py             # 核心比對邏輯（SSH 取資料 + 四種異常偵測）
+├── app.py                  # FastAPI 後端，REST API、認證、靜態檔案服務
+├── analyzer.py             # 核心比對邏輯（SSH 取資料 + 異常偵測 + DNS 反查）
+├── config.py               # 帳號密碼設定
+├── nac_store.py            # NAC MAC 清單讀寫（nac_macs.json）
+├── nac_macs.json           # NAC 設備 MAC 清單（Web UI 可即時更新）
 ├── parser/
 │   ├── dhcp_conf.py        # 解析 dhcpd.conf（pool range、fixed-address、known subnets）
 │   ├── dhcp_leases.py      # 解析 dhcpd.leases（active lease 記錄）
-│   └── arp.py              # 查詢 LibreNMS MySQL 取得 ARP 現況
+│   ├── arp.py              # 查詢 LibreNMS MySQL 取得 ARP 現況
+│   └── dns_lookup.py       # 平行 PTR 反查（對 3 台 DNS Server）
 ├── static/
-│   └── index.html          # Web UI（Bootstrap 5 + Vanilla JS）
+│   ├── index.html          # 主頁 Web UI（Bootstrap 5 + Vanilla JS）
+│   └── login.html          # 登入頁面
 └── requirements.txt
 ```
 
@@ -157,10 +201,15 @@ dhcp-analyzer/
 
 | Endpoint | Method | 說明 |
 |---|---|---|
-| `GET /` | GET | Web UI 主頁 |
+| `GET /` | GET | Web UI 主頁（需登入） |
+| `GET /login` | GET | 登入頁面 |
+| `POST /login` | POST | 登入驗證 |
+| `GET /logout` | GET | 登出 |
 | `GET /api/analyze` | GET | 執行分析，回傳所有異常（結果快取 5 分鐘） |
 | `GET /api/analyze?refresh=true` | GET | 強制重新分析（略過快取） |
 | `GET /api/summary` | GET | 快速回傳目前快取的統計數字 |
+| `GET /api/nac-macs` | GET | 取得目前 NAC MAC 清單 |
+| `POST /api/nac-macs` | POST | 更新 NAC MAC 清單（自動清除分析快取） |
 
 ### `/api/analyze` 回應格式
 
@@ -186,7 +235,9 @@ dhcp-analyzer/
       "fixed_mac": "",
       "dhcp_server": "",
       "description": "IP 落在 DHCP pool ...",
-      "subnet_managed": true
+      "subnet_managed": true,
+      "dns_name": "host01.example.com",
+      "nac_blocked": false
     }
   ]
 }
@@ -202,6 +253,9 @@ dhcp-analyzer/
 | uvicorn | 0.32.1 | ASGI Server |
 | paramiko | 3.5.0 | SSH 連線讀取 DHCP Server 設定與租約 |
 | mysql-connector-python | 9.1.0 | 查詢 LibreNMS MySQL ARP 資料 |
+| dnspython | 2.7.0 | PTR 反查（指定 DNS Server） |
+| python-multipart | 0.0.20 | 表單登入解析 |
+| itsdangerous | 2.2.0 | Session 簽名 |
 
 ---
 
@@ -211,3 +265,5 @@ dhcp-analyzer/
 - LibreNMS 每 5 分鐘更新一次 ARP 資料，因此分析結果最多落後 5 分鐘。
 - Type B（MAC 衝突）代表目前可能正在發生 IP 衝突，應優先處理。
 - Type A（佔用 Pool）在下次 DHCP 配發時才會實際衝突，但仍應儘早登錄至 `dhcpd.conf`。
+- NAC 封鎖的 IP 更新 NAC MAC 設定後，須重新分析才會重新分類。
+- Session 有效期為 8 小時，逾時需重新登入。
