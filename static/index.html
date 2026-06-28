@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DHCP Analyzer</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+  body { background: #f4f6f9; }
+  .badge-A  { background:#dc3545; }
+  .badge-B  { background:#fd7e14; }
+  .badge-C  { background:#ffc107; color:#000; }
+  .badge-D  { background:#6f42c1; }
+  .badge-D2 { background:#adb5bd; color:#000; }
+  .type-pill { font-size:.82em; padding:.25em .65em; border-radius:999px; color:#fff; font-weight:600; white-space:nowrap; }
+  #tbl-anomalies thead { position:sticky; top:0; background:#fff; z-index:1; }
+  .spinner-overlay {
+    display:none; position:fixed; inset:0;
+    background:rgba(255,255,255,.75); z-index:9999;
+    align-items:center; justify-content:center;
+  }
+  .spinner-overlay.active { display:flex; }
+  .stat-card { border-left:4px solid; }
+  .stat-A  { border-color:#dc3545; }
+  .stat-B  { border-color:#fd7e14; }
+  .stat-C  { border-color:#ffc107; }
+  .stat-D  { border-color:#6f42c1; }
+  .stat-D2 { border-color:#adb5bd; }
+  .managed-badge   { font-size:.7em; padding:.15em .5em; border-radius:3px; background:#6f42c1; color:#fff; }
+  .unmanaged-badge { font-size:.7em; padding:.15em .5em; border-radius:3px; background:#adb5bd; color:#000; }
+</style>
+</head>
+<body>
+
+<div class="spinner-overlay" id="spinner">
+  <div class="text-center">
+    <div class="spinner-border text-primary mb-2" style="width:3rem;height:3rem;"></div>
+    <div class="fw-semibold">分析中，請稍候...</div>
+  </div>
+</div>
+
+<div class="container-fluid py-4">
+  <div class="d-flex align-items-center mb-4 gap-3 flex-wrap">
+    <h4 class="mb-0 fw-bold">DHCP Analyzer</h4>
+    <button class="btn btn-primary btn-sm" onclick="loadData(false)">重新整理</button>
+    <button class="btn btn-warning btn-sm" onclick="loadData(true)">強制重新分析</button>
+    <span class="ms-auto text-muted" style="font-size:.8em" id="cache-info"></span>
+  </div>
+
+  <!-- 統計卡片 -->
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-xl-2">
+      <div class="card stat-card stat-A h-100">
+        <div class="card-body py-2">
+          <div class="text-muted small">A｜靜態佔用 Pool</div>
+          <div class="fs-2 fw-bold text-danger" id="cnt-A">-</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-2">
+      <div class="card stat-card stat-B h-100">
+        <div class="card-body py-2">
+          <div class="text-muted small">B｜Lease MAC 不符</div>
+          <div class="fs-2 fw-bold" style="color:#fd7e14" id="cnt-B">-</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-2">
+      <div class="card stat-card stat-C h-100">
+        <div class="card-body py-2">
+          <div class="text-muted small">C｜Fixed MAC 不符</div>
+          <div class="fs-2 fw-bold" style="color:#c98a00" id="cnt-C">-</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-2">
+      <div class="card stat-card stat-D h-100">
+        <div class="card-body py-2">
+          <div class="text-muted small">D｜DHCP 管理網段未登記</div>
+          <div class="fs-2 fw-bold" style="color:#6f42c1" id="cnt-D">-</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-2">
+      <div class="card stat-card stat-D2 h-100">
+        <div class="card-body py-2">
+          <div class="text-muted small">D｜純靜態網段</div>
+          <div class="fs-2 fw-bold text-secondary" id="cnt-D2">-</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-2">
+      <div class="card h-100 border-0 bg-white">
+        <div class="card-body py-2">
+          <div class="text-muted small">ARP 總筆數</div>
+          <div class="fs-2 fw-bold text-secondary" id="arp-total">-</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 篩選列 -->
+  <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
+    <div class="btn-group btn-group-sm" role="group" id="filter-btns">
+      <button class="btn btn-outline-secondary active" data-filter="ALL">全部</button>
+      <button class="btn btn-outline-danger"            data-filter="A">A</button>
+      <button class="btn btn-outline-warning"           data-filter="B">B</button>
+      <button class="btn btn-outline-warning"           data-filter="C" style="color:#c98a00">C</button>
+      <button class="btn btn-outline-secondary"         data-filter="D_managed"   style="color:#6f42c1">D DHCP管理</button>
+      <button class="btn btn-outline-secondary"         data-filter="D_unmanaged">D 靜態網段</button>
+    </div>
+    <input type="text" class="form-control form-control-sm" style="max-width:250px"
+           placeholder="搜尋 IP / MAC / hostname..."
+           id="search-box" oninput="renderTable()">
+    <span class="ms-auto text-muted small" id="row-count"></span>
+  </div>
+
+  <!-- 異常表格 -->
+  <div class="card shadow-sm">
+    <div class="card-body p-0" style="max-height:62vh;overflow-y:auto;">
+      <table class="table table-sm table-hover mb-0" id="tbl-anomalies">
+        <thead class="table-light">
+          <tr>
+            <th style="width:90px">類型</th>
+            <th>IP</th>
+            <th>ARP MAC</th>
+            <th>ARP 來源 / 介面</th>
+            <th>Lease / Fixed MAC</th>
+            <th>Hostname / 設備名稱</th>
+            <th>DHCP Server</th>
+            <th>說明</th>
+          </tr>
+        </thead>
+        <tbody id="tbl-body">
+          <tr><td colspan="8" class="text-center text-muted py-4">尚未載入資料</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 伺服器狀態 -->
+  <div class="mt-3" id="srv-status"></div>
+</div>
+
+<script>
+let _data = [];
+let _filter = 'ALL';
+
+// 篩選按鈕事件
+document.getElementById('filter-btns').addEventListener('click', e => {
+  const btn = e.target.closest('[data-filter]');
+  if (!btn) return;
+  _filter = btn.dataset.filter;
+  document.querySelectorAll('#filter-btns .btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderTable();
+});
+
+async function loadData(forceRefresh = false) {
+  document.getElementById('spinner').classList.add('active');
+  try {
+    const url = '/api/analyze' + (forceRefresh ? '?refresh=true' : '');
+    const res = await fetch(url);
+    const json = await res.json();
+    if (json.error) { alert('分析失敗：' + json.error); return; }
+    _data = json.anomalies || [];
+    updateStats(json);
+    renderTable();
+    renderServers(json);
+    const age = json.cache_age || 0;
+    document.getElementById('cache-info').textContent =
+      json.cached ? `快取資料（${age} 秒前）` : '即時資料';
+  } catch(e) {
+    alert('請求失敗：' + e);
+  } finally {
+    document.getElementById('spinner').classList.remove('active');
+  }
+}
+
+function updateStats(json) {
+  document.getElementById('arp-total').textContent = json.arp_total ?? '-';
+  let cntA=0, cntB=0, cntC=0, cntD=0, cntD2=0;
+  (json.anomalies||[]).forEach(a => {
+    if (a.type==='A') cntA++;
+    else if (a.type==='B') cntB++;
+    else if (a.type==='C') cntC++;
+    else if (a.type==='D' && a.subnet_managed) cntD++;
+    else if (a.type==='D' && !a.subnet_managed) cntD2++;
+  });
+  document.getElementById('cnt-A').textContent  = cntA;
+  document.getElementById('cnt-B').textContent  = cntB;
+  document.getElementById('cnt-C').textContent  = cntC;
+  document.getElementById('cnt-D').textContent  = cntD;
+  document.getElementById('cnt-D2').textContent = cntD2;
+}
+
+function matchFilter(a) {
+  if (_filter === 'ALL')         return true;
+  if (_filter === 'A')           return a.type === 'A';
+  if (_filter === 'B')           return a.type === 'B';
+  if (_filter === 'C')           return a.type === 'C';
+  if (_filter === 'D_managed')   return a.type === 'D' && a.subnet_managed;
+  if (_filter === 'D_unmanaged') return a.type === 'D' && !a.subnet_managed;
+  return true;
+}
+
+function renderTable() {
+  const q = document.getElementById('search-box').value.toLowerCase();
+  const rows = _data.filter(a => {
+    if (!matchFilter(a)) return false;
+    if (q) return [a.ip, a.arp_mac, a.lease_mac, a.fixed_mac, a.lease_hostname, a.fixed_name]
+      .some(v => (v||'').toLowerCase().includes(q));
+    return true;
+  });
+
+  document.getElementById('row-count').textContent = `顯示 ${rows.length} 筆`;
+
+  const tbody = document.getElementById('tbl-body');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">無符合資料</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(a => {
+    let typePill;
+    if (a.type === 'D') {
+      const cls  = a.subnet_managed ? 'badge-D' : 'badge-D2';
+      const label = a.subnet_managed ? 'D' : 'D*';
+      typePill = `<span class="type-pill ${cls}">${label}</span>
+                  <span class="${a.subnet_managed ? 'managed-badge' : 'unmanaged-badge'} ms-1">
+                    ${a.subnet_managed ? 'DHCP管理' : '靜態網段'}
+                  </span>`;
+    } else {
+      const cls = {A:'badge-A', B:'badge-B', C:'badge-C'}[a.type];
+      typePill = `<span class="type-pill ${cls}">${a.type}</span>`;
+    }
+
+    const refMac = a.lease_mac || a.fixed_mac
+      ? `<span class="font-monospace">${a.lease_mac || ''}</span>
+         ${a.fixed_mac && a.fixed_mac !== a.lease_mac
+           ? `<br><span class="text-muted font-monospace">${a.fixed_mac}</span>` : ''}`
+      : '<span class="text-muted">—</span>';
+
+    return `<tr>
+      <td style="white-space:nowrap">${typePill}</td>
+      <td class="font-monospace">${a.ip}</td>
+      <td class="font-monospace">${a.arp_mac}</td>
+      <td><small>${a.arp_source}<br><span class="text-muted">${a.arp_interface}</span></small></td>
+      <td>${refMac}</td>
+      <td><small>${a.lease_hostname || a.fixed_name || '<span class="text-muted">—</span>'}</small></td>
+      <td><small>${a.dhcp_server || '—'}</small></td>
+      <td><small>${a.description}</small></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderServers(json) {
+  const ok  = (json.servers_ok||[]).map(s =>
+    `<span class="badge bg-success me-1">${s}</span>`).join('');
+  const err = (json.servers_error||[]).map(e =>
+    `<span class="badge bg-danger me-1" title="${e.error}">${e.server} ✗</span>`).join('');
+  document.getElementById('srv-status').innerHTML =
+    `<small class="text-muted">DHCP Servers：${ok}${err}</small>`;
+}
+
+loadData(false);
+</script>
+</body>
+</html>
