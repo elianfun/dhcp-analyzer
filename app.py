@@ -1,17 +1,17 @@
 import time
 import threading
-from fastapi import FastAPI, Request, Form, Depends
+from fastapi import FastAPI, Request, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from analyzer import run_analysis, AnalysisResult
 from config import SESSION_SECRET, verify_password
+from nac_store import load as load_nac_macs, save as save_nac_macs
 
 app = FastAPI(title="DHCP Analyzer")
-app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, max_age=28800)  # 8 小時
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, max_age=28800)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# 快取（5 分鐘 TTL）
 _cache: dict = {"result": None, "ts": 0}
 _lock = threading.Lock()
 CACHE_TTL = 300
@@ -19,10 +19,9 @@ CACHE_TTL = 300
 
 # ---------- Auth ----------
 
-def require_login(request: Request):
+def _auth_api(request: Request):
     if not request.session.get("user"):
-        return None
-    return request.session["user"]
+        raise __import__("fastapi").HTTPException(status_code=401, detail="Unauthorized")
 
 
 @app.get("/login")
@@ -55,12 +54,7 @@ def index(request: Request):
     return FileResponse("static/index.html")
 
 
-# ---------- API ----------
-
-def _auth_api(request: Request):
-    if not request.session.get("user"):
-        raise __import__("fastapi").HTTPException(status_code=401, detail="Unauthorized")
-
+# ---------- Analyze API ----------
 
 def _to_dict(result: AnalysisResult) -> dict:
     return {
@@ -84,6 +78,7 @@ def _to_dict(result: AnalysisResult) -> dict:
                 "description": a.description,
                 "subnet_managed": a.subnet_managed,
                 "dns_name": a.dns_name,
+                "nac_blocked": a.nac_blocked,
             }
             for a in result.anomalies
         ],
@@ -130,6 +125,29 @@ def summary(request: Request):
             "cache_age": int(time.time() - _cache["ts"]),
         }
     return {"anomaly_count": None, "message": "尚未執行分析"}
+
+
+# ---------- NAC MAC API ----------
+
+@app.get("/api/nac-macs")
+def get_nac_macs(request: Request):
+    _auth_api(request)
+    return JSONResponse({"macs": load_nac_macs()})
+
+
+@app.post("/api/nac-macs")
+async def set_nac_macs(request: Request):
+    _auth_api(request)
+    body = await request.json()
+    macs = body.get("macs", [])
+    if not isinstance(macs, list):
+        return JSONResponse({"error": "macs must be a list"}, status_code=400)
+    save_nac_macs(macs)
+    # 清除快取，下次分析時套用新設定
+    with _lock:
+        _cache["result"] = None
+        _cache["ts"] = 0
+    return JSONResponse({"macs": load_nac_macs()})
 
 
 if __name__ == "__main__":

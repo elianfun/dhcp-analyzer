@@ -6,6 +6,7 @@ from parser.dhcp_conf import (
 from parser.dhcp_leases import parse_leases, get_active_leases
 from parser.arp import fetch_arp_entries, get_arp_by_ip, ArpEntry
 from parser.dns_lookup import bulk_reverse_lookup
+from nac_store import load as load_nac_macs, is_nac_mac
 
 
 DHCP_SERVERS = [
@@ -24,7 +25,7 @@ LEASES_PATH = "/var/lib/dhcp/dhcpd.leases"
 
 @dataclass
 class Anomaly:
-    type: str           # A / B / C / D
+    type: str           # A / B / C / D / NAC
     ip: str
     arp_mac: str
     arp_source: str
@@ -36,8 +37,9 @@ class Anomaly:
     fixed_mac: str
     dhcp_server: str
     description: str
-    subnet_managed: bool = False  # IP 所屬子網路是否有在任何 dhcpd.conf 宣告
-    dns_name: str = ""            # PTR 反查結果
+    subnet_managed: bool = False
+    dns_name: str = ""
+    nac_blocked: bool = False
 
 
 @dataclass
@@ -73,12 +75,13 @@ def _fetch_dhcp_data(server: dict) -> tuple[DhcpConfig | None, dict, str | None]
 
 def run_analysis() -> AnalysisResult:
     result = AnalysisResult()
+    nac_macs = load_nac_macs()
 
     # 1. 取得所有 DHCP server 的設定與 lease
     all_ranges        = []
     all_fixed         = []
-    all_leases        = {}   # ip -> (Lease, server_name)
-    all_known_subnets = []   # 所有 dhcpd.conf 宣告過的子網路
+    all_leases        = {}
+    all_known_subnets = []
 
     for srv in DHCP_SERVERS:
         config, active, error = _fetch_dhcp_data(srv)
@@ -95,7 +98,6 @@ def run_analysis() -> AnalysisResult:
             if ip not in all_leases:
                 all_leases[ip] = (lease, srv["name"])
 
-    # 去重（不同 server 可能宣告相同子網路）
     all_known_subnets = list(set(all_known_subnets))
 
     # 2. 取得 ARP 資料
@@ -113,8 +115,9 @@ def run_analysis() -> AnalysisResult:
         lease          = lease_tup[0] if lease_tup else None
         srv_name       = lease_tup[1] if lease_tup else ""
         in_managed_net = ip_in_known_subnet(ip, all_known_subnets)
+        blocked_by_nac = is_nac_mac(arp.mac, nac_macs)
 
-        def base(t, desc) -> Anomaly:
+        def base(t, desc, nac=False) -> Anomaly:
             return Anomaly(
                 type=t,
                 ip=ip,
@@ -129,10 +132,21 @@ def run_analysis() -> AnalysisResult:
                 dhcp_server=srv_name,
                 description=desc,
                 subnet_managed=in_managed_net,
+                nac_blocked=nac,
             )
 
+        # NAC 封鎖：ARP MAC 是 NAC 設備 → 優先判斷，不走 A/B/C/D
+        if blocked_by_nac:
+            original_mac = (lease.mac if lease else "") or (fixed.mac if fixed else "")
+            result.anomalies.append(base(
+                "NAC",
+                f"此 IP 被 NAC 封鎖（ARP MAC 為 NAC 設備 {arp.mac}）"
+                + (f"，原登錄 MAC：{original_mac}" if original_mac else ""),
+                nac=True,
+            ))
+            continue
+
         if in_range and not lease and not fixed:
-            # Type A：佔用 DHCP pool，無 lease 無 fixed-address
             result.anomalies.append(base(
                 "A",
                 f"IP 落在 DHCP pool {in_range.start}-{in_range.end}，"
@@ -140,14 +154,12 @@ def run_analysis() -> AnalysisResult:
             ))
 
         elif lease and arp.mac != lease.mac:
-            # Type B：ARP MAC 與 lease MAC 不符
             result.anomalies.append(base(
                 "B",
                 f"Active lease MAC ({lease.mac}) 與 ARP MAC ({arp.mac}) 不符，可能發生 IP 衝突"
             ))
 
         elif fixed and arp.mac != fixed.mac:
-            # Type C：ARP MAC 與 fixed-address MAC 不符
             result.anomalies.append(base(
                 "C",
                 f"fixed-address 登錄 MAC ({fixed.mac}) 與 ARP MAC ({arp.mac}) 不符，"
@@ -155,17 +167,20 @@ def run_analysis() -> AnalysisResult:
             ))
 
         elif not in_range and not fixed:
-            # Type D：不在任何 DHCP pool，也未登錄 fixed-address
             if in_managed_net:
                 desc = "IP 所屬子網路有 DHCP 設定，但此 IP 未登錄 fixed-address，管理者忘記登記"
             else:
                 desc = "IP 所屬子網路未在任何 dhcpd.conf 宣告，屬於純靜態管理網段"
             result.anomalies.append(base("D", desc))
 
-    # 依類型 → subnet_managed(managed優先) → IP 排序
-    result.anomalies.sort(key=lambda a: (a.type, not a.subnet_managed, a.ip))
+    # NAC 排最後，其餘依類型 → subnet_managed → IP
+    result.anomalies.sort(key=lambda a: (
+        "Z" if a.type == "NAC" else a.type,
+        not a.subnet_managed,
+        a.ip
+    ))
 
-    # DNS 反查（平行查詢，填入每筆異常）
+    # DNS 反查
     all_ips   = [a.ip for a in result.anomalies]
     dns_cache = bulk_reverse_lookup(all_ips)
     for a in result.anomalies:

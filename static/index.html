@@ -7,11 +7,12 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
   body { background: #f4f6f9; }
-  .badge-A  { background:#dc3545; }
-  .badge-B  { background:#fd7e14; }
-  .badge-C  { background:#ffc107; color:#000; }
-  .badge-D  { background:#6f42c1; }
-  .badge-D2 { background:#adb5bd; color:#000; }
+  .badge-A   { background:#dc3545; }
+  .badge-B   { background:#fd7e14; }
+  .badge-C   { background:#ffc107; color:#000; }
+  .badge-D   { background:#6f42c1; }
+  .badge-D2  { background:#adb5bd; color:#000; }
+  .badge-NAC { background:#198754; }
   .type-pill { font-size:.82em; padding:.25em .65em; border-radius:999px; color:#fff; font-weight:600; white-space:nowrap; }
   #tbl-anomalies thead { position:sticky; top:0; background:#fff; z-index:1; }
   .spinner-overlay {
@@ -20,14 +21,17 @@
     align-items:center; justify-content:center;
   }
   .spinner-overlay.active { display:flex; }
-  .stat-card { border-left:4px solid; }
-  .stat-A  { border-color:#dc3545; }
-  .stat-B  { border-color:#fd7e14; }
-  .stat-C  { border-color:#ffc107; }
-  .stat-D  { border-color:#6f42c1; }
-  .stat-D2 { border-color:#adb5bd; }
+  .stat-card  { border-left:4px solid; }
+  .stat-A   { border-color:#dc3545; }
+  .stat-B   { border-color:#fd7e14; }
+  .stat-C   { border-color:#ffc107; }
+  .stat-D   { border-color:#6f42c1; }
+  .stat-D2  { border-color:#adb5bd; }
+  .stat-NAC { border-color:#198754; }
   .managed-badge   { font-size:.7em; padding:.15em .5em; border-radius:3px; background:#6f42c1; color:#fff; }
   .unmanaged-badge { font-size:.7em; padding:.15em .5em; border-radius:3px; background:#adb5bd; color:#000; }
+  .nac-row td { background:#f0faf4 !important; }
+  #nac-mac-list .input-group { margin-bottom:.4rem; }
 </style>
 </head>
 <body>
@@ -39,11 +43,37 @@
   </div>
 </div>
 
+<!-- NAC MAC 設定 Modal -->
+<div class="modal fade" id="nacModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">NAC 設備 MAC 設定</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-3">ARP MAC 符合以下清單的 IP 將被標記為「NAC 封鎖」，不列入 A/B/C/D 異常。</p>
+        <div id="nac-mac-list"></div>
+        <button class="btn btn-outline-secondary btn-sm mt-1" onclick="addNacMacRow('')">
+          + 新增 MAC
+        </button>
+      </div>
+      <div class="modal-footer">
+        <span id="nac-save-msg" class="text-success me-auto small d-none">已儲存，下次分析時生效</span>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-primary" onclick="saveNacMacs()">儲存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="container-fluid py-4">
+  <!-- 頂部工具列 -->
   <div class="d-flex align-items-center mb-4 gap-3 flex-wrap">
     <h4 class="mb-0 fw-bold">DHCP Analyzer</h4>
     <button class="btn btn-primary btn-sm" onclick="loadData(false)">重新整理</button>
     <button class="btn btn-warning btn-sm" onclick="loadData(true)">強制重新分析</button>
+    <button class="btn btn-outline-success btn-sm" data-bs-toggle="modal" data-bs-target="#nacModal" onclick="openNacModal()">NAC 設定</button>
     <span class="ms-auto text-muted" style="font-size:.8em" id="cache-info"></span>
     <a href="/logout" class="btn btn-outline-secondary btn-sm">登出</a>
   </div>
@@ -77,7 +107,7 @@
     <div class="col-6 col-xl-2">
       <div class="card stat-card stat-D h-100">
         <div class="card-body py-2">
-          <div class="text-muted small">D｜DHCP 管理網段未登記</div>
+          <div class="text-muted small">D｜DHCP 管理未登記</div>
           <div class="fs-2 fw-bold" style="color:#6f42c1" id="cnt-D">-</div>
         </div>
       </div>
@@ -90,7 +120,15 @@
         </div>
       </div>
     </div>
-    <div class="col-6 col-xl-2">
+    <div class="col-6 col-xl-1">
+      <div class="card stat-card stat-NAC h-100">
+        <div class="card-body py-2">
+          <div class="text-muted small">NAC 封鎖</div>
+          <div class="fs-2 fw-bold text-success" id="cnt-NAC">-</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-xl-1">
       <div class="card h-100 border-0 bg-white">
         <div class="card-body py-2">
           <div class="text-muted small">ARP 總筆數</div>
@@ -104,11 +142,12 @@
   <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
     <div class="btn-group btn-group-sm" role="group" id="filter-btns">
       <button class="btn btn-outline-secondary active" data-filter="ALL">全部</button>
-      <button class="btn btn-outline-danger"            data-filter="A">A</button>
-      <button class="btn btn-outline-warning"           data-filter="B">B</button>
-      <button class="btn btn-outline-warning"           data-filter="C" style="color:#c98a00">C</button>
-      <button class="btn btn-outline-secondary"         data-filter="D_managed"   style="color:#6f42c1">D DHCP管理</button>
-      <button class="btn btn-outline-secondary"         data-filter="D_unmanaged">D 靜態網段</button>
+      <button class="btn btn-outline-danger"           data-filter="A">A</button>
+      <button class="btn btn-outline-warning"          data-filter="B">B</button>
+      <button class="btn btn-outline-warning"          data-filter="C" style="color:#c98a00">C</button>
+      <button class="btn btn-outline-secondary"        data-filter="D_managed"   style="color:#6f42c1">D DHCP管理</button>
+      <button class="btn btn-outline-secondary"        data-filter="D_unmanaged">D 靜態網段</button>
+      <button class="btn btn-outline-success"          data-filter="NAC">NAC 封鎖</button>
     </div>
     <input type="text" class="form-control form-control-sm" style="max-width:250px"
            placeholder="搜尋 IP / MAC / hostname..."
@@ -122,7 +161,7 @@
       <table class="table table-sm table-hover mb-0" id="tbl-anomalies">
         <thead class="table-light">
           <tr>
-            <th style="width:90px">類型</th>
+            <th style="width:110px">類型</th>
             <th>IP</th>
             <th>ARP MAC</th>
             <th>ARP 來源 / 介面</th>
@@ -140,15 +179,14 @@
     </div>
   </div>
 
-  <!-- 伺服器狀態 -->
   <div class="mt-3" id="srv-status"></div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 let _data = [];
 let _filter = 'ALL';
 
-// 篩選按鈕事件
 document.getElementById('filter-btns').addEventListener('click', e => {
   const btn = e.target.closest('[data-filter]');
   if (!btn) return;
@@ -169,9 +207,8 @@ async function loadData(forceRefresh = false) {
     updateStats(json);
     renderTable();
     renderServers(json);
-    const age = json.cache_age || 0;
     document.getElementById('cache-info').textContent =
-      json.cached ? `快取資料（${age} 秒前）` : '即時資料';
+      json.cached ? `快取資料（${json.cache_age} 秒前）` : '即時資料';
   } catch(e) {
     alert('請求失敗：' + e);
   } finally {
@@ -181,19 +218,21 @@ async function loadData(forceRefresh = false) {
 
 function updateStats(json) {
   document.getElementById('arp-total').textContent = json.arp_total ?? '-';
-  let cntA=0, cntB=0, cntC=0, cntD=0, cntD2=0;
+  let cntA=0, cntB=0, cntC=0, cntD=0, cntD2=0, cntNAC=0;
   (json.anomalies||[]).forEach(a => {
-    if (a.type==='A') cntA++;
-    else if (a.type==='B') cntB++;
-    else if (a.type==='C') cntC++;
-    else if (a.type==='D' && a.subnet_managed) cntD++;
-    else if (a.type==='D' && !a.subnet_managed) cntD2++;
+    if      (a.type==='A')                        cntA++;
+    else if (a.type==='B')                        cntB++;
+    else if (a.type==='C')                        cntC++;
+    else if (a.type==='D' && a.subnet_managed)    cntD++;
+    else if (a.type==='D' && !a.subnet_managed)   cntD2++;
+    else if (a.type==='NAC')                      cntNAC++;
   });
-  document.getElementById('cnt-A').textContent  = cntA;
-  document.getElementById('cnt-B').textContent  = cntB;
-  document.getElementById('cnt-C').textContent  = cntC;
-  document.getElementById('cnt-D').textContent  = cntD;
-  document.getElementById('cnt-D2').textContent = cntD2;
+  document.getElementById('cnt-A').textContent   = cntA;
+  document.getElementById('cnt-B').textContent   = cntB;
+  document.getElementById('cnt-C').textContent   = cntC;
+  document.getElementById('cnt-D').textContent   = cntD;
+  document.getElementById('cnt-D2').textContent  = cntD2;
+  document.getElementById('cnt-NAC').textContent = cntNAC;
 }
 
 function matchFilter(a) {
@@ -203,6 +242,7 @@ function matchFilter(a) {
   if (_filter === 'C')           return a.type === 'C';
   if (_filter === 'D_managed')   return a.type === 'D' && a.subnet_managed;
   if (_filter === 'D_unmanaged') return a.type === 'D' && !a.subnet_managed;
+  if (_filter === 'NAC')         return a.type === 'NAC';
   return true;
 }
 
@@ -216,8 +256,8 @@ function renderTable() {
   });
 
   document.getElementById('row-count').textContent = `顯示 ${rows.length} 筆`;
-
   const tbody = document.getElementById('tbl-body');
+
   if (!rows.length) {
     tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">無符合資料</td></tr>';
     return;
@@ -226,15 +266,16 @@ function renderTable() {
   tbody.innerHTML = rows.map(a => {
     let typePill;
     if (a.type === 'D') {
-      const cls  = a.subnet_managed ? 'badge-D' : 'badge-D2';
+      const cls   = a.subnet_managed ? 'badge-D' : 'badge-D2';
       const label = a.subnet_managed ? 'D' : 'D*';
       typePill = `<span class="type-pill ${cls}">${label}</span>
                   <span class="${a.subnet_managed ? 'managed-badge' : 'unmanaged-badge'} ms-1">
                     ${a.subnet_managed ? 'DHCP管理' : '靜態網段'}
                   </span>`;
+    } else if (a.type === 'NAC') {
+      typePill = `<span class="type-pill badge-NAC">NAC</span>`;
     } else {
-      const cls = {A:'badge-A', B:'badge-B', C:'badge-C'}[a.type];
-      typePill = `<span class="type-pill ${cls}">${a.type}</span>`;
+      typePill = `<span class="type-pill badge-${a.type}">${a.type}</span>`;
     }
 
     const refMac = a.lease_mac || a.fixed_mac
@@ -247,7 +288,9 @@ function renderTable() {
       ? `<small class="text-success fw-semibold">${a.dns_name}</small>`
       : '<span class="text-muted small">—</span>';
 
-    return `<tr>
+    const rowClass = a.nac_blocked ? 'nac-row' : '';
+
+    return `<tr class="${rowClass}">
       <td style="white-space:nowrap">${typePill}</td>
       <td class="font-monospace">${a.ip}</td>
       <td class="font-monospace">${a.arp_mac}</td>
@@ -262,12 +305,47 @@ function renderTable() {
 }
 
 function renderServers(json) {
-  const ok  = (json.servers_ok||[]).map(s =>
-    `<span class="badge bg-success me-1">${s}</span>`).join('');
+  const ok  = (json.servers_ok||[]).map(s => `<span class="badge bg-success me-1">${s}</span>`).join('');
   const err = (json.servers_error||[]).map(e =>
     `<span class="badge bg-danger me-1" title="${e.error}">${e.server} ✗</span>`).join('');
   document.getElementById('srv-status').innerHTML =
     `<small class="text-muted">DHCP Servers：${ok}${err}</small>`;
+}
+
+// ---------- NAC Modal ----------
+
+function addNacMacRow(value) {
+  const list = document.getElementById('nac-mac-list');
+  const div  = document.createElement('div');
+  div.className = 'input-group input-group-sm';
+  div.innerHTML = `
+    <input type="text" class="form-control font-monospace nac-mac-input"
+           placeholder="xx:xx:xx:xx:xx:xx" value="${value}">
+    <button class="btn btn-outline-danger" type="button" onclick="this.closest('.input-group').remove()">✕</button>`;
+  list.appendChild(div);
+}
+
+async function openNacModal() {
+  const res  = await fetch('/api/nac-macs');
+  const json = await res.json();
+  document.getElementById('nac-mac-list').innerHTML = '';
+  document.getElementById('nac-save-msg').classList.add('d-none');
+  (json.macs || []).forEach(m => addNacMacRow(m));
+}
+
+async function saveNacMacs() {
+  const inputs = document.querySelectorAll('.nac-mac-input');
+  const macs   = [...inputs].map(i => i.value.trim()).filter(v => v);
+  const res    = await fetch('/api/nac-macs', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({macs})
+  });
+  if (res.ok) {
+    document.getElementById('nac-save-msg').classList.remove('d-none');
+  } else {
+    alert('儲存失敗');
+  }
 }
 
 loadData(false);
