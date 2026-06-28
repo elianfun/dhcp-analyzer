@@ -5,6 +5,7 @@ from parser.dhcp_conf import (
 )
 from parser.dhcp_leases import parse_leases, get_active_leases
 from parser.arp import fetch_arp_entries, get_arp_by_ip, ArpEntry
+from parser.dns_lookup import bulk_reverse_lookup
 
 
 DHCP_SERVERS = [
@@ -36,6 +37,7 @@ class Anomaly:
     dhcp_server: str
     description: str
     subnet_managed: bool = False  # IP 所屬子網路是否有在任何 dhcpd.conf 宣告
+    dns_name: str = ""            # PTR 反查結果
 
 
 @dataclass
@@ -162,4 +164,11 @@ def run_analysis() -> AnalysisResult:
 
     # 依類型 → subnet_managed(managed優先) → IP 排序
     result.anomalies.sort(key=lambda a: (a.type, not a.subnet_managed, a.ip))
+
+    # DNS 反查（平行查詢，填入每筆異常）
+    all_ips   = [a.ip for a in result.anomalies]
+    dns_cache = bulk_reverse_lookup(all_ips)
+    for a in result.anomalies:
+        a.dns_name = dns_cache.get(a.ip, "")
+
     return result

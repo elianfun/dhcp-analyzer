@@ -127,12 +127,13 @@
             <th>ARP 來源 / 介面</th>
             <th>Lease / Fixed MAC</th>
             <th>Hostname / 設備名稱</th>
+            <th>DNS 名稱</th>
             <th>DHCP Server</th>
             <th>說明</th>
           </tr>
         </thead>
         <tbody id="tbl-body">
-          <tr><td colspan="8" class="text-center text-muted py-4">尚未載入資料</td></tr>
+          <tr><td colspan="9" class="text-center text-muted py-4">尚未載入資料</td></tr>
         </tbody>
       </table>
     </div>
@@ -208,7 +209,7 @@ function renderTable() {
   const q = document.getElementById('search-box').value.toLowerCase();
   const rows = _data.filter(a => {
     if (!matchFilter(a)) return false;
-    if (q) return [a.ip, a.arp_mac, a.lease_mac, a.fixed_mac, a.lease_hostname, a.fixed_name]
+    if (q) return [a.ip, a.arp_mac, a.lease_mac, a.fixed_mac, a.lease_hostname, a.fixed_name, a.dns_name]
       .some(v => (v||'').toLowerCase().includes(q));
     return true;
   });
@@ -217,7 +218,7 @@ function renderTable() {
 
   const tbody = document.getElementById('tbl-body');
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">無符合資料</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">無符合資料</td></tr>';
     return;
   }
 
@@ -241,6 +242,10 @@ function renderTable() {
            ? `<br><span class="text-muted font-monospace">${a.fixed_mac}</span>` : ''}`
       : '<span class="text-muted">—</span>';
 
+    const dnsCell = a.dns_name
+      ? `<small class="text-success fw-semibold">${a.dns_name}</small>`
+      : '<span class="text-muted small">—</span>';
+
     return `<tr>
       <td style="white-space:nowrap">${typePill}</td>
       <td class="font-monospace">${a.ip}</td>
@@ -248,6 +253,7 @@ function renderTable() {
       <td><small>${a.arp_source}<br><span class="text-muted">${a.arp_interface}</span></small></td>
       <td>${refMac}</td>
       <td><small>${a.lease_hostname || a.fixed_name || '<span class="text-muted">—</span>'}</small></td>
+      <td>${dnsCell}</td>
       <td><small>${a.dhcp_server || '—'}</small></td>
       <td><small>${a.description}</small></td>
     </tr>`;

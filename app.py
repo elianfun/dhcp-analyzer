@@ -35,6 +35,7 @@ def _to_dict(result: AnalysisResult) -> dict:
                 "dhcp_server": a.dhcp_server,
                 "description": a.description,
                 "subnet_managed": a.subnet_managed,
+                "dns_name": a.dns_name,
             }
             for a in result.anomalies
         ],
