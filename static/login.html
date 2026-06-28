@@ -39,7 +39,7 @@
   </div>
   <div class="card-body p-4">
     <div id="error-msg" class="alert alert-danger d-none" role="alert">帳號或密碼錯誤</div>
-    <form method="POST" action="/login" id="login-form">
+    <form method="POST" action="/login">
       <div class="mb-3">
         <label class="form-label fw-semibold">帳號</label>
         <input type="text" class="form-control" name="username" autofocus autocomplete="username" required>
@@ -54,18 +54,9 @@
 </div>
 
 <script>
-  // 後端回傳 401 時 header 帶 X-Login-Error，顯示錯誤訊息
-  // 用 fetch 攔截表單送出以偵測 401
-  document.getElementById('login-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const form = e.target;
-    const res = await fetch('/login', { method: 'POST', body: new FormData(form), redirect: 'follow' });
-    if (res.ok || res.redirected) {
-      window.location.href = res.url || '/';
-    } else {
-      document.getElementById('error-msg').classList.remove('d-none');
-    }
-  });
+  if (new URLSearchParams(location.search).get('error')) {
+    document.getElementById('error-msg').classList.remove('d-none');
+  }
 </script>
 </body>
 </html>

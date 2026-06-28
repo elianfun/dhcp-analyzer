@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from analyzer import run_analysis, AnalysisResult
-from config import AUTH_USERNAME, SESSION_SECRET, verify_password
+from config import SESSION_SECRET, verify_password
 
 app = FastAPI(title="DHCP Analyzer")
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, max_age=28800)  # 8 小時
@@ -34,11 +34,10 @@ def login_page(request: Request):
 
 @app.post("/login")
 async def login(request: Request, username: str = Form(...), password: str = Form(...)):
-    if username == AUTH_USERNAME and verify_password(password):
+    if verify_password(username, password):
         request.session["user"] = username
         return RedirectResponse("/", status_code=302)
-    return FileResponse("static/login.html", status_code=401,
-                        headers={"X-Login-Error": "帳號或密碼錯誤"})
+    return RedirectResponse("/login?error=1", status_code=302)
 
 
 @app.get("/logout")
