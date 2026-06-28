@@ -3,3 +3,5 @@ uvicorn==0.32.1
 paramiko==3.5.0
 mysql-connector-python==9.1.0
 dnspython==2.7.0
+python-multipart==0.0.20
+itsdangerous==2.2.0

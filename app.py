@@ -1,17 +1,66 @@
 import time
 import threading
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Form, Depends
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 from analyzer import run_analysis, AnalysisResult
+from config import AUTH_USERNAME, SESSION_SECRET, verify_password
 
 app = FastAPI(title="DHCP Analyzer")
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, max_age=28800)  # 8 小時
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# 快取：避免每次請求都重跑（預設 5 分鐘 TTL）
+# 快取（5 分鐘 TTL）
 _cache: dict = {"result": None, "ts": 0}
 _lock = threading.Lock()
-CACHE_TTL = 300  # seconds
+CACHE_TTL = 300
+
+
+# ---------- Auth ----------
+
+def require_login(request: Request):
+    if not request.session.get("user"):
+        return None
+    return request.session["user"]
+
+
+@app.get("/login")
+def login_page(request: Request):
+    if request.session.get("user"):
+        return RedirectResponse("/", status_code=302)
+    return FileResponse("static/login.html")
+
+
+@app.post("/login")
+async def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    if username == AUTH_USERNAME and verify_password(password):
+        request.session["user"] = username
+        return RedirectResponse("/", status_code=302)
+    return FileResponse("static/login.html", status_code=401,
+                        headers={"X-Login-Error": "帳號或密碼錯誤"})
+
+
+@app.get("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=302)
+
+
+# ---------- Pages ----------
+
+@app.get("/")
+def index(request: Request):
+    if not request.session.get("user"):
+        return RedirectResponse("/login", status_code=302)
+    return FileResponse("static/index.html")
+
+
+# ---------- API ----------
+
+def _auth_api(request: Request):
+    if not request.session.get("user"):
+        raise __import__("fastapi").HTTPException(status_code=401, detail="Unauthorized")
 
 
 def _to_dict(result: AnalysisResult) -> dict:
@@ -42,19 +91,15 @@ def _to_dict(result: AnalysisResult) -> dict:
     }
 
 
-@app.get("/")
-def index():
-    return FileResponse("static/index.html")
-
-
 @app.get("/api/analyze")
-def analyze(refresh: bool = False):
+def analyze(request: Request, refresh: bool = False):
+    _auth_api(request)
     global _cache
     now = time.time()
 
     with _lock:
         if not refresh and _cache["result"] and (now - _cache["ts"]) < CACHE_TTL:
-            data = _cache["result"]
+            data = dict(_cache["result"])
             data["cached"] = True
             data["cache_age"] = int(now - _cache["ts"])
             return JSONResponse(data)
@@ -72,11 +117,11 @@ def analyze(refresh: bool = False):
 
 
 @app.get("/api/summary")
-def summary():
-    """快速回傳目前快取的統計數字，不觸發重新分析。"""
+def summary(request: Request):
+    _auth_api(request)
     if _cache["result"]:
         r = _cache["result"]
-        by_type = {}
+        by_type: dict = {}
         for a in r["anomalies"]:
             by_type[a["type"]] = by_type.get(a["type"], 0) + 1
         return {
